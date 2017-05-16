@@ -2,7 +2,7 @@
 #
 # pyFlow - a lightweight parallel task engine
 #
-# Copyright (c) 2012-2015 Illumina, Inc.
+# Copyright (c) 2012-2017 Illumina, Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -71,24 +71,55 @@ def lockMethod(f):
 
 
 
-class SyncronizedCounter(object):
+class SyncronizedAccumulator(object) :
 
     def __init__(self) :
-        self._count = 0
+        self._values = []
 
     @lockMethod
-    def increment(self, value):
-        self._count += value
+    def addOrderedValue(self, index, value):
+        if index+1 > len(self._values) :
+            self._values.append(None)
+        self._values[index] = value
 
     @lockMethod
-    def getCount(self):
-        return self._count
+    def numberOfCompleteTasks(self):
+        count = 0
+        for v in self._values :
+            if v is None : continue
+            count += 1
+        return count
+
+    @lockMethod
+    def numberOfContinuousCompleteTasks(self):
+        count = 0
+        for v in self._values :
+            if v is None : break
+            count += 1
+        return count
+
+    @lockMethod
+    def totalValue(self):
+        sum = 0
+        for v in self._values :
+            if v is None : continue
+            sum += v
+        return sum
+
+    @lockMethod
+    def totalContinuousValue(self):
+        sum = 0
+        for v in self._values :
+            if v is None : break
+            sum += v
+        return sum
 
 
 
 class SumWorkflow(WorkflowRunner) :
 
-    def __init__(self, inputFile, totalWorkCompleted) :
+    def __init__(self, taskIndex, inputFile, totalWorkCompleted) :
+        self.taskIndex=taskIndex
         self.inputFile=inputFile
         self.totalWorkCompleted=totalWorkCompleted
 
@@ -98,7 +129,7 @@ class SumWorkflow(WorkflowRunner) :
         value = int(infp.read().strip())
         infp.close()
         os.remove(self.inputFile)
-        self.totalWorkCompleted.increment(value)
+        self.totalWorkCompleted.addOrderedValue(taskIndex,value)
 
 
 class LauncherWorkflow(WorkflowRunner) :
@@ -110,7 +141,7 @@ class LauncherWorkflow(WorkflowRunner) :
 
         allTasks = set()
         completedTasks = set()
-        totalWorkCompleted = SyncronizedCounter()
+        totalWorkCompleted = SyncronizedAccumulator()
 
         def launchNextTask() :
             taskIndex = len(allTasks)
@@ -122,7 +153,7 @@ class LauncherWorkflow(WorkflowRunner) :
             allTasks.insert(workerTaskLabel)
 
             sumTaskLabel="sumTask%05i" % (taskIndex)
-            self.addWorkflowTask(sumTaskLabel, SumWorkflow(workerTaskFile, totalWorkCompleted), dependencies=workerTaskLabel)
+            self.addWorkflowTask(sumTaskLabel, SumWorkflow(taskIndex, workerTaskFile, totalWorkCompleted), dependencies=workerTaskLabel)
 
         def updateCompletedTasks() :
             for task in allTasks :
